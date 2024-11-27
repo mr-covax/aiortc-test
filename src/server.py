@@ -1,14 +1,35 @@
 from fastapi import FastAPI, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, MediaStreamTrack, sdp
 from aiortc.contrib.media import MediaPlayer, MediaRecorder, MediaRelay
+
 
 class Descriptor(BaseModel):
     type: str
     sdp: str
 
+
+class Participant(BaseModel, arbitrary_types_allowed=True):
+    socket: WebSocket
+    conn: RTCPeerConnection
+    online: bool = False
+    videoTrack: MediaStreamTrack | None = None
+    audioTrack: MediaStreamTrack | None = None
+
+    async def renegotiate(self):
+        offer = await self.conn.createOffer()
+        await self.conn.setLocalDescription(offer)
+        await self.socket.send_json({
+            "type": self.conn.localDescription.type,
+            "sdp": self._remove_extmap(self.conn.localDescription.sdp)
+        })
+    
+    def _remove_extmap(self, offer: str):
+        sdp = [line for line in offer.splitlines() if not line.startswith("a=extmap")]
+        return "\r\n".join(sdp) + "\r\n"
+    
 
 app = FastAPI()
 app.add_middleware(
@@ -19,20 +40,33 @@ app.add_middleware(
     allow_headers="*"
 )
 
-host = None
-host_audio = None
-host_video = None
 relay: MediaRelay = MediaRelay()
+activeParticipants: dict[int, Participant] = dict()
+
 
 @app.get("/")
 async def get_code():
     with open("./static/index.html") as f:
         return HTMLResponse(f.read())
     
+
+@app.get("/client.js")
+async def get_code():
+    with open("./static/client.js") as f:
+        return PlainTextResponse(f.read())
+
+ 
 @app.websocket("/join")
 async def join_room(ws: WebSocket):
-    global host
+    global activeParticipants
+
     await ws.accept()
+
+    uid = len(activeParticipants)
+    user = Participant(socket=ws, conn=RTCPeerConnection())
+    activeParticipants[uid] = user
+
+    print(len(activeParticipants))
     
     while True:
         data = await ws.receive_json()
@@ -47,7 +81,7 @@ async def join_room(ws: WebSocket):
             if payload["candidate"] == "":
                 continue
     
-            await peer.addIceCandidate(RTCIceCandidate(
+            await user.conn.addIceCandidate(RTCIceCandidate(
                 foundation=candidate[0],
                 component=candidate[1],
                 priority=candidate[3],
@@ -60,46 +94,43 @@ async def join_room(ws: WebSocket):
             ))
 
         elif data["type"] == "offer":
-            peer = RTCPeerConnection()
-            if host is None:
-                host = peer
-
             offer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
 
-            @peer.on('track')
+            @user.conn.on('track')
             def on_track(track):
-                global relay 
-    
-                global host_audio, host_video
-                if track.kind == "audio":
-                    if peer == host:
-                        host_audio = track
-                        peer.addTrack(relay.subscribe(host_audio))
-                    else:
-                        print("Fuck off")
-                        peer.addTrack(relay.subscribe(host_audio))
-                    
-                if track.kind == "video":
-                    if peer == host:
-                        host_video = track
-                        peer.addTrack(relay.subscribe(host_video))
-                    else:
-                        peer.addTrack(relay.subscribe(host_video))
-
                 @track.on("ended")
                 async def on_ended():
                     print("Track is ended :(")
+    
+                global relay
+                if track.kind == "audio":
+                    user.audioTrack = track
+                if track.kind == "video":
+                    user.videoTrack = track
 
-            @peer.on("connectionstatechange")
+            @user.conn.on("connectionstatechange")
             async def on_connectionstatechange():
-                print(f"The connection changed it state to: {peer.connectionState}")
+                global activeParticipants
+                nonlocal user
+    
+                print(f"The connection changed its state to: {user.conn.connectionState}")
+                
+                if user.conn.connectionState == "connected" and not user.online:
+                    print("Starting to send tracks")
+                    for participant in activeParticipants.values():
+                        print(participant)
+                        if participant.audioTrack:
+                            user.conn.addTrack(relay.subscribe(participant.audioTrack))
+                        if participant.videoTrack:
+                            user.conn.addTrack(relay.subscribe(participant.videoTrack))
+                    await user.renegotiate()
+                    user.online = True
             
-            await peer.setRemoteDescription(offer)
-
-            answer = await peer.createAnswer()
-            await peer.setLocalDescription(answer)
+            await user.conn.setRemoteDescription(offer)
+            answer = await user.conn.createAnswer()
+            await user.conn.setLocalDescription(answer)
 
             await ws.send_json({
-                "type": peer.localDescription.type,
-                "sdp": peer.localDescription.sdp
+                "type": user.conn.localDescription.type,
+                "sdp": user.conn.localDescription.sdp
             })
