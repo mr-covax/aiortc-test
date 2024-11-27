@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+
+<html>
+    <head>
+        <title>WebRTC test</title>
+    </head>
+    <body>
+        <audio id="audioSink" autoplay controls></audio>
+        <video id="videoSink" autoplay controls playsinline style="max-width: 600px;"></video>
+        <script>
+            async function iceCallback(event) {
+                console.log("Hey, ice candidate appeared!")
+                if (event.candidate) {
+                    if (event.candidate.candidate === '') {
+                        return;
+                    }
+                    console.log("Candidate: ", event.candidate.candidate)
+                }
+            }
+
+            async function awaitForGatheringEnd(peerConnection) {
+                return new Promise((resolve) => {
+                    peerConnection.onicecandidate = (iceEvent) => {
+                        if (iceEvent.candidate == null)
+                            resolve()
+                    }
+                })
+            }
+    
+            async function start() {
+                pc = new RTCPeerConnection()
+                stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+                
+                pc.onicecandidate = iceCallback;
+                pc.addEventListener('track', (evt) => {
+                    if (evt.track.kind == 'video') {
+                        console.log("Received video stream from server!")
+                        document.getElementById('videoSink').srcObject = evt.streams[0];
+                    }
+                    else {
+                        console.log("Received audio stream from server!");
+                        document.getElementById('audioSink').srcObject = evt.streams[0];
+                    }
+                });
+                pc.onconnectionstatechange = function () {
+                    console.log(pc.connectionState)
+                };
+
+                stream.getTracks().forEach(track => pc.addTrack(track, stream));
+                
+                offer = pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await awaitForGatheringEnd(pc);
+                
+                console.log(pc.localDescription.sdp);
+                
+                response = await fetch("/offer", {
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    }),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    method: 'POST'
+                })
+                .then((response) => {
+                    return response.json()
+                });
+                
+                console.log(JSON.stringify(response));
+                await pc.setRemoteDescription(response);
+            }
+            start();
+        </script>
+    </body>
+</html>
