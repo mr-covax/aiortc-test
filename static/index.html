@@ -28,6 +28,24 @@
             }
     
             async function start() {
+                const socket = new WebSocket("/join");
+
+                socket.onopen = () => {
+                    console.log("Hey, WebSocket /join initialized!");
+                    const request = {type: "message", message: "Hello, world"}
+                    socket.send(JSON.stringify(request))
+                }
+
+                socket.onmessage = async (event) => {
+                    const structure = JSON.parse(event.data);
+                    if (structure.type == "answer") {                     
+                        console.log(JSON.stringify(structure));
+                        await pc.setRemoteDescription(structure);
+                    } else if (structure.type == "message") {
+                        console.log("Got message: ", structure.message);
+                    }
+                }
+            
                 pc = new RTCPeerConnection()
                 stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
                 
@@ -53,24 +71,15 @@
                 await awaitForGatheringEnd(pc);
                 
                 console.log(pc.localDescription.sdp);
-                
-                response = await fetch("/offer", {
-                    body: JSON.stringify({
-                        sdp: pc.localDescription.sdp,
-                        type: pc.localDescription.type
-                    }),
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    method: 'POST'
-                })
-                .then((response) => {
-                    return response.json()
-                });
-                
-                console.log(JSON.stringify(response));
-                await pc.setRemoteDescription(response);
+
+                const offerRequest = {
+                    type: pc.localDescription.type,
+                    sdp: pc.localDescription.sdp
+                };
+
+                await socket.send(JSON.stringify(offerRequest))
             }
+
             start();
         </script>
     </body>
