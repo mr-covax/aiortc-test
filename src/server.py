@@ -2,7 +2,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc.contrib.media import MediaPlayer, MediaRecorder, MediaRelay
 
 class Descriptor(BaseModel):
@@ -24,8 +24,6 @@ host_audio = None
 host_video = None
 relay: MediaRelay = MediaRelay()
 
-
-
 @app.get("/")
 async def get_code():
     with open("./static/index.html") as f:
@@ -42,6 +40,25 @@ async def join_room(ws: WebSocket):
             print(data["message"])
             await ws.send_json({"type": "message", "message": "I printed that shit!"})
 
+        elif data["type"] == "candidate":
+            payload = data["candidate"]
+            candidate = payload["candidate"].split(" ")
+            
+            if payload["candidate"] == "":
+                continue
+    
+            await peer.addIceCandidate(RTCIceCandidate(
+                foundation=candidate[0],
+                component=candidate[1],
+                priority=candidate[3],
+                ip=candidate[4],
+                port=candidate[5],
+                protocol=candidate[7],
+                type=candidate[7],
+                sdpMid=payload["sdpMid"],
+                sdpMLineIndex=payload["sdpMLineIndex"]
+            ))
+
         elif data["type"] == "offer":
             peer = RTCPeerConnection()
             if host is None:
@@ -51,6 +68,8 @@ async def join_room(ws: WebSocket):
 
             @peer.on('track')
             def on_track(track):
+                global relay 
+    
                 global host_audio, host_video
                 if track.kind == "audio":
                     if peer == host:

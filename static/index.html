@@ -5,28 +5,8 @@
         <title>WebRTC test</title>
     </head>
     <body>
-        <audio id="audioSink" autoplay controls></audio>
         <video id="videoSink" autoplay controls playsinline style="max-width: 600px;"></video>
         <script>
-            async function iceCallback(event) {
-                console.log("Hey, ice candidate appeared!")
-                if (event.candidate) {
-                    if (event.candidate.candidate === '') {
-                        return;
-                    }
-                    console.log("Candidate: ", event.candidate.candidate)
-                }
-            }
-
-            async function awaitForGatheringEnd(peerConnection) {
-                return new Promise((resolve) => {
-                    peerConnection.onicecandidate = (iceEvent) => {
-                        if (iceEvent.candidate == null)
-                            resolve()
-                    }
-                })
-            }
-    
             async function start() {
                 const socket = new WebSocket("/join");
 
@@ -47,9 +27,13 @@
                 }
             
                 pc = new RTCPeerConnection()
-                stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
                 
-                pc.onicecandidate = iceCallback;
+                pc.onicecandidate = async (event) => {
+                    if (event.candidate) {
+                        request = {type: "candidate", candidate: event.candidate};
+                        await socket.send(JSON.stringify(request));
+                    }
+                };
                 pc.addEventListener('track', (evt) => {
                     if (evt.track.kind == 'video') {
                         console.log("Received video stream from server!")
@@ -63,14 +47,14 @@
                 pc.onconnectionstatechange = function () {
                     console.log(pc.connectionState)
                 };
-
+                
+                console.log("Getting audio and video...")
+                stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+                console.log(stream)
                 stream.getTracks().forEach(track => pc.addTrack(track, stream));
                 
                 offer = pc.createOffer();
                 await pc.setLocalDescription(offer);
-                await awaitForGatheringEnd(pc);
-                
-                console.log(pc.localDescription.sdp);
 
                 const offerRequest = {
                     type: pc.localDescription.type,
